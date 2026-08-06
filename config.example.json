@@ -1,0 +1,20 @@
+{
+  "ssid": "@MSU-Net",
+  "poll_interval": 10,
+  "portal_url": "http://10.99.92.1/webAuth/",
+  "portal_origin": "http://10.99.92.1",
+  "credentials": {
+    "username": "YOUR_STUDENT_ID",
+    "password": "YOUR_PASSWORD"
+  },
+  "success_check": {
+    "type": "url_not_contains",
+    "value": "webAuth"
+  },
+  "retry": {
+    "attempts": 3,
+    "backoff_seconds": 5
+  },
+  "log_file": "autologin.log",
+  "notifications": false
+}

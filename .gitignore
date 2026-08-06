@@ -1,0 +1,42 @@
+# ── Secrets / local config ────────────────────────────────────────────────
+# config.json holds the campus username + password. Never commit it.
+config.json
+*.local.json
+.env
+.env.*
+
+# ── Logs ──────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Virtual environments ──────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Editors / OS ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+Desktop.ini
+$RECYCLE.BIN/
+
+# ── Claude Code local settings ────────────────────────────────────────────
+.claude/settings.local.json
