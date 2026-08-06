@@ -14,6 +14,7 @@ import getpass
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -343,12 +344,19 @@ def cmd_setup() -> None:
 
 # ── Interactive menu ──────────────────────────────────────────────────────────
 
+HIDE_CURSOR = "\033[?25l"
+SHOW_CURSOR = "\033[?25h"
+CLEAR_LINE  = "\033[2K"       # erase the whole line, cursor stays put
+CLEAR_BELOW = "\033[0J"       # erase from the cursor to the end of the screen
+
+
 def _clear_screen() -> None:
-    os.system("cls" if os.name == "nt" else "clear")
+    sys.stdout.write("\033[2J\033[H")
+    sys.stdout.flush()
 
 
 def _pause() -> None:
-    input(f"\n{CYAN}Enter เพื่อกลับ...{RESET}")
+    input(f"\n{CYAN}Press Enter to go back...{RESET}")
 
 
 def _read_key() -> str:
@@ -384,29 +392,56 @@ def _read_key() -> str:
 
 
 def select(title: str, subtitle: str, options: list[str]) -> int:
-    """Arrow-key menu. Returns the chosen index, or -1 if cancelled."""
-    idx = 0
-    while True:
-        _clear_screen()
-        print(f"\n  {CYAN}{title}{RESET}")
-        if subtitle:
-            print(f"  {subtitle}")
-        print()
-        for i, opt in enumerate(options):
-            print(f"  {GREEN}▸ {opt}{RESET}" if i == idx else f"    {opt}")
-        print(f"\n  {CYAN}↑↓ เลื่อน · Enter เลือก · Esc ออก{RESET}")
+    """Arrow-key menu. Returns the chosen index, or -1 if cancelled.
 
-        key = _read_key()
-        if key == "up":
-            idx = (idx - 1) % len(options)
-        elif key == "down":
-            idx = (idx + 1) % len(options)
-        elif key == "enter":
-            return idx
-        elif key == "esc":
-            return -1
-        elif key.isdigit() and 1 <= int(key) <= len(options):
-            return int(key) - 1
+    Redraws by moving the cursor back over the previous frame and overwriting
+    it line by line. Clearing the whole screen on every keypress is what makes
+    a menu like this flicker.
+    """
+    idx = 0
+    drawn = 0
+    width = max(shutil.get_terminal_size((80, 25)).columns - 2, 20)
+
+    _clear_screen()
+    sys.stdout.write(HIDE_CURSOR)
+    try:
+        while True:
+            # (colour, plain text) so truncation is not confused by escape codes
+            rows: list[tuple[str, str]] = [("", ""), (CYAN, f"  {title}")]
+            if subtitle:
+                rows.append(("", f"  {subtitle}"))
+            rows.append(("", ""))
+            for i, opt in enumerate(options):
+                rows.append((GREEN, f"  > {opt}") if i == idx else ("", f"    {opt}"))
+            rows.append(("", ""))
+            rows.append((CYAN, "  up/down: move   enter: select   esc: back"))
+
+            frame = []
+            for colour, text in rows:
+                # Subtitle already carries its own colours; leave it untouched.
+                body = text if "\033" in text else f"{colour}{text[:width]}{RESET}"
+                frame.append(f"{CLEAR_LINE}{body}\n")
+
+            if drawn:
+                sys.stdout.write(f"\033[{drawn}A")   # jump back to frame start
+            sys.stdout.write("".join(frame) + CLEAR_BELOW)
+            sys.stdout.flush()
+            drawn = len(frame)
+
+            key = _read_key()
+            if key == "up":
+                idx = (idx - 1) % len(options)
+            elif key == "down":
+                idx = (idx + 1) % len(options)
+            elif key == "enter":
+                return idx
+            elif key == "esc":
+                return -1
+            elif key.isdigit() and 1 <= int(key) <= len(options):
+                return int(key) - 1
+    finally:
+        sys.stdout.write(SHOW_CURSOR)
+        sys.stdout.flush()
 
 
 def _ask(prompt: str, default: str = "") -> str:
@@ -420,7 +455,7 @@ def _confirm(prompt: str) -> bool:
 
 
 def _mask(secret: str) -> str:
-    return "*" * len(secret) if secret else "(ว่าง)"
+    return "*" * len(secret) if secret else "(empty)"
 
 
 # ── Log viewer ────────────────────────────────────────────────────────────────
@@ -448,16 +483,16 @@ def _colour_log_line(line: str) -> str:
 def _last_check_line() -> str:
     """One-line summary of the most recent log entry, for the menu header."""
     if not _log_path or not _log_path.exists():
-        return f"{YELLOW}ยังไม่มีบันทึกการตรวจ{RESET}"
+        return f"{YELLOW}No checks logged yet{RESET}"
     try:
         with _log_path.open("rb") as f:
             f.seek(0, 2)
             f.seek(max(f.tell() - 4096, 0))
             tail = f.read().decode("utf-8", "replace").splitlines()
     except OSError:
-        return f"{YELLOW}อ่านไฟล์ log ไม่ได้{RESET}"
+        return f"{YELLOW}Cannot read the log file{RESET}"
     if not tail:
-        return f"{YELLOW}ยังไม่มีบันทึกการตรวจ{RESET}"
+        return f"{YELLOW}No checks logged yet{RESET}"
 
     m = re.match(r"\[(.+?)\]\s*(.*)", tail[-1])
     when, msg = (m.group(1), m.group(2)) if m else ("", tail[-1])
@@ -469,22 +504,22 @@ def _last_check_line() -> str:
     colour = (GREEN if any(w in low for w in _OK_WORDS)
               else RED if any(w in low for w in _BAD_WORDS)
               else YELLOW)
-    return f"ตรวจล่าสุด {when} · {colour}{msg}{RESET}"
+    return f"Last check {when} - {colour}{msg}{RESET}"
 
 
 def _print_log(lines: list[str]) -> None:
     if not lines:
-        print(f"{YELLOW}ไม่พบข้อมูลที่ตรงเงื่อนไข{RESET}")
+        print(f"{YELLOW}No matching lines{RESET}")
         return
     for line in lines:
         print(_colour_log_line(line))
-    print(f"\n{CYAN}— แสดง {len(lines)} บรรทัด —{RESET}")
+    print(f"\n{CYAN}-- {len(lines)} lines shown --{RESET}")
 
 
 def _log_stats() -> None:
     lines = _log_lines()
     if not lines:
-        print(f"{YELLOW}log ยังว่างอยู่{RESET}")
+        print(f"{YELLOW}The log is empty{RESET}")
         return
 
     ok      = sum(1 for l in lines if "Login successful" in l)
@@ -495,39 +530,39 @@ def _log_stats() -> None:
 
     size_kb = _log_path.stat().st_size / 1024 if _log_path else 0
 
-    print(f"  ไฟล์            : {_log_path}")
-    print(f"  ขนาด            : {size_kb:,.1f} KB")
-    print(f"  จำนวนบรรทัด      : {len(lines):,}")
-    print(f"  บรรทัดแรก        : {lines[0]}")
-    print(f"  บรรทัดล่าสุด     : {lines[-1]}")
+    print(f"  File            : {_log_path}")
+    print(f"  Size            : {size_kb:,.1f} KB")
+    print(f"  Lines           : {len(lines):,}")
+    print(f"  First entry     : {lines[0]}")
+    print(f"  Last entry      : {lines[-1]}")
     print()
-    print(f"  {GREEN}ล็อกอินสำเร็จ     : {ok:,} ครั้ง{RESET}")
-    print(f"  {RED}ล็อกอินล้มเหลว    : {failed:,} ครั้ง (ครบทุก attempt){RESET}")
-    print(f"  {YELLOW}attempt ที่พลาด   : {retried:,} ครั้ง{RESET}")
-    print(f"  {YELLOW}request error    : {errors:,} ครั้ง{RESET}")
-    print(f"  เข้าร่วม Wi-Fi     : {joins:,} ครั้ง")
+    print(f"  {GREEN}Logins succeeded : {ok:,}{RESET}")
+    print(f"  {RED}Logins failed    : {failed:,} (all attempts exhausted){RESET}")
+    print(f"  {YELLOW}Attempts missed  : {retried:,}{RESET}")
+    print(f"  {YELLOW}Request errors   : {errors:,}{RESET}")
+    print(f"  Wi-Fi joins     : {joins:,}")
 
 
 def menu_log() -> None:
     global _last_log_msg
     options = [
-        "20 บรรทัดล่าสุด",
-        "50 บรรทัดล่าสุด",
-        "ค้นหาคำใน log",
-        "เฉพาะบรรทัดที่ผิดพลาด",
-        "สรุปสถิติ",
-        "ตามดูแบบเรียลไทม์",
-        "ล้างไฟล์ log",
-        "กลับ",
+        "Last 20 lines",
+        "Last 50 lines",
+        "Search the log",
+        "Errors only",
+        "Statistics",
+        "Follow live",
+        "Clear the log file",
+        "Back",
     ]
     while True:
-        choice = select("ตรวจสอบ Log", _last_check_line(), options)
+        choice = select("Log", _last_check_line(), options)
         print()
 
         if choice in (-1, 7):
             return
         if not _log_path:
-            print(f"{RED}config ไม่ได้ตั้งค่า log_file ไว้{RESET}")
+            print(f"{RED}No log_file set in the config{RESET}")
             _pause()
             return
 
@@ -536,15 +571,15 @@ def menu_log() -> None:
         elif choice == 1:
             _print_log(_log_lines()[-50:])
         elif choice == 2:
-            keyword = _ask("ค้นหา")
+            keyword = _ask("Search for")
             if not keyword:
                 continue
             hits = [l for l in _log_lines() if keyword.lower() in l.lower()]
-            print(f"\n{CYAN}พบ {len(hits)} บรรทัด (แสดง 100 ล่าสุด){RESET}\n")
+            print(f"\n{CYAN}{len(hits)} matches (showing the last 100){RESET}\n")
             _print_log(hits[-100:])
         elif choice == 3:
             bad = [l for l in _log_lines() if any(w in l.lower() for w in _BAD_WORDS)]
-            print(f"{CYAN}พบ {len(bad)} บรรทัด (แสดง 100 ล่าสุด){RESET}\n")
+            print(f"{CYAN}{len(bad)} matches (showing the last 100){RESET}\n")
             _print_log(bad[-100:])
         elif choice == 4:
             _log_stats()
@@ -552,13 +587,13 @@ def menu_log() -> None:
             _tail_follow()
         elif choice == 6:
             if not _log_path.exists():
-                print(f"{YELLOW}ยังไม่มีไฟล์ log{RESET}")
-            elif _confirm(f"ลบข้อมูลทั้งหมดใน {_log_path.name} ?"):
+                print(f"{YELLOW}No log file yet{RESET}")
+            elif _confirm(f"Erase everything in {_log_path.name}?"):
                 _log_path.write_text("", encoding="utf-8")
                 _last_log_msg = None
-                print(f"{GREEN}ล้าง log เรียบร้อย{RESET}")
+                print(f"{GREEN}Log cleared{RESET}")
             else:
-                print("ยกเลิก")
+                print("Cancelled")
 
         _pause()
 
@@ -566,9 +601,9 @@ def menu_log() -> None:
 def _tail_follow() -> None:
     """Print new log lines as they are appended, until Ctrl+C."""
     if not _log_path or not _log_path.exists():
-        print(f"{YELLOW}ยังไม่มีไฟล์ log{RESET}")
+        print(f"{YELLOW}No log file yet{RESET}")
         return
-    print(f"{CYAN}กำลังตามดู {_log_path.name} — Ctrl+C เพื่อหยุด{RESET}\n")
+    print(f"{CYAN}Following {_log_path.name} - press Ctrl+C to stop{RESET}\n")
     try:
         with _log_path.open(encoding="utf-8", errors="replace") as f:
             for line in f.read().splitlines()[-10:]:
@@ -581,7 +616,7 @@ def _tail_follow() -> None:
                 else:
                     time.sleep(0.5)
     except KeyboardInterrupt:
-        print(f"\n{CYAN}หยุดตามดู log{RESET}")
+        print(f"\n{CYAN}Stopped following the log{RESET}")
 
 
 # ── Config editor ─────────────────────────────────────────────────────────────
@@ -596,14 +631,14 @@ def _config_options(cfg: dict) -> list[str]:
         f"Portal origin   {cfg.get('portal_origin', '')}",
         f"Username        {creds.get('username', '')}",
         f"Password        {_mask(creds.get('password', ''))}",
-        f"Poll interval   {cfg.get('poll_interval', 10)} วินาที",
+        f"Poll interval   {cfg.get('poll_interval', 10)}s",
         f"Retry attempts  {retry.get('attempts', 3)}",
-        f"Retry backoff   {retry.get('backoff_seconds', 5)} วินาที",
+        f"Retry backoff   {retry.get('backoff_seconds', 5)}s",
         f"Log file        {cfg.get('log_file', '')}",
         f"Notifications   {cfg.get('notifications', False)}",
         f"Success check   {check.get('type', '')} = {check.get('value', '')}",
-        "ตั้งค่าใหม่ทั้งหมด (wizard)",
-        "กลับ",
+        "Run the full setup wizard",
+        "Back",
     ]
 
 
@@ -612,7 +647,7 @@ def _edit_int(cfg_section: dict, key: str, label: str, default: int) -> None:
     try:
         cfg_section[key] = int(raw)
     except ValueError:
-        print(f"{RED}ต้องเป็นตัวเลข — ไม่มีการเปลี่ยนแปลง{RESET}")
+        print(f"{RED}Must be a number - nothing changed{RESET}")
 
 
 def menu_config(cfg: dict) -> dict:
@@ -621,7 +656,7 @@ def menu_config(cfg: dict) -> dict:
         cfg.setdefault("retry", {})
         cfg.setdefault("success_check", {})
 
-        choice = select("ตั้งค่า Config", "แก้แล้วบันทึกทันที", _config_options(cfg))
+        choice = select("Config", "Changes are saved immediately", _config_options(cfg))
         print()
 
         if choice in (-1, 12):
@@ -636,17 +671,17 @@ def menu_config(cfg: dict) -> dict:
             cfg["credentials"]["username"] = _ask(
                 "Username", cfg["credentials"].get("username", ""))
         elif choice == 4:
-            pw = getpass.getpass("Password ใหม่ (Enter = ไม่เปลี่ยน): ").strip()
+            pw = getpass.getpass("New password (Enter to keep): ").strip()
             if pw:
                 cfg["credentials"]["password"] = pw
             else:
-                print("ไม่เปลี่ยนรหัสผ่าน")
+                print("Password unchanged")
         elif choice == 5:
-            _edit_int(cfg, "poll_interval", "Poll interval (วินาที)", 10)
+            _edit_int(cfg, "poll_interval", "Poll interval (seconds)", 10)
         elif choice == 6:
             _edit_int(cfg["retry"], "attempts", "Retry attempts", 3)
         elif choice == 7:
-            _edit_int(cfg["retry"], "backoff_seconds", "Retry backoff (วินาที)", 5)
+            _edit_int(cfg["retry"], "backoff_seconds", "Retry backoff (seconds)", 5)
         elif choice == 8:
             cfg["log_file"] = _ask("Log file", cfg.get("log_file", "autologin.log"))
             set_log_path(cfg)
@@ -654,11 +689,11 @@ def menu_config(cfg: dict) -> dict:
             cfg["notifications"] = not cfg.get("notifications", False)
             print(f"Notifications = {cfg['notifications']}")
         elif choice == 10:
-            print("ชนิด: url_not_contains | url_contains | status_code")
+            print("Type: url_not_contains | url_contains | status_code")
             cfg["success_check"]["type"] = _ask(
-                "ชนิด", cfg["success_check"].get("type", "url_not_contains"))
+                "Type", cfg["success_check"].get("type", "url_not_contains"))
             cfg["success_check"]["value"] = _ask(
-                "ค่า", str(cfg["success_check"].get("value", "webAuth")))
+                "Value", str(cfg["success_check"].get("value", "webAuth")))
         elif choice == 11:
             cmd_setup()
             cfg = load_config()
@@ -674,12 +709,12 @@ def menu_config(cfg: dict) -> dict:
 
 def menu_main(cfg: dict) -> None:
     options = [
-        "ตรวจสอบสถานะ",
-        "ล็อกอินทันที",
-        "เฝ้าอัตโนมัติ (daemon)",
-        "ดู log",
-        "ตั้งค่า",
-        "ออก",
+        "Check status",
+        "Login now",
+        "Watch automatically (daemon)",
+        "View log",
+        "Config",
+        "Quit",
     ]
     while True:
         choice = select("Campus Wi-Fi Auto-Login", _last_check_line(), options)
@@ -692,8 +727,8 @@ def menu_main(cfg: dict) -> None:
             _pause()
         elif choice == 1:
             ok = do_once(cfg)
-            print(f"\n{GREEN}ล็อกอินสำเร็จ{RESET}" if ok
-                  else f"\n{RED}ล็อกอินไม่สำเร็จ{RESET}")
+            print(f"\n{GREEN}Login successful{RESET}" if ok
+                  else f"\n{RED}Login failed{RESET}")
             _pause()
         elif choice == 2:
             cmd_daemon(cfg)
@@ -724,7 +759,7 @@ def main() -> None:
         return
 
     if not CONFIG_PATH.exists():
-        print(f"{YELLOW}ยังไม่มี config.json — เริ่มตั้งค่าครั้งแรก{RESET}")
+        print(f"{YELLOW}No config.json yet - running first-time setup{RESET}")
         cmd_setup()
 
     cfg = load_config()
